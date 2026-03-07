@@ -1,0 +1,452 @@
+--RINGER DOORS — DELTA EDITION (FULL FILE) 
+-- Improved scheduler: prevents over-spawning and repeated spawn of same entity
+-- Delta-friendly: no getgenv, no require forced, safe pcall, fallback placeholder.
+
+-- ===== Services =====
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
+local Debris = game:GetService("Debris")
+
+local LocalPlayer = Players.LocalPlayer
+
+local function log(...) print("[RINGER DOORS]", ...) end
+local function warn(...) warn("[RINGER DOORS]", ...) end
+
+-- small helper waitFor
+local function waitFor(cond, timeout, step)
+	timeout = timeout or 8
+	step = step or 0.12
+	local t = 0
+	while not cond() and t < timeout do
+		task.wait(step)
+		t = t + step
+	end
+	return cond()
+end
+
+-- ===== INTRO IMAGE (CENTERED) =====
+do
+	local GUI_NAME = "OD_INTRO_CENTERED"
+	task.spawn(function()
+		if not LocalPlayer then
+			Players.PlayerAdded:Wait()
+			LocalPlayer = Players.LocalPlayer
+		end
+		if not waitFor(function() return LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui") end, 6, 0.08) then
+			log("Intro: PlayerGui missing, skip")
+			return
+		end
+
+		-- remove old
+		pcall(function()
+			local old = LocalPlayer.PlayerGui:FindFirstChild(GUI_NAME)
+			if old then old:Destroy() end
+		end)
+
+		pcall(function()
+			local gui = Instance.new("ScreenGui")
+			gui.Name = GUI_NAME
+			gui.ResetOnSpawn = false
+			gui.IgnoreGuiInset = true
+			pcall(function() gui.DisplayOrder = 1000 end)
+			gui.Parent = LocalPlayer.PlayerGui
+
+			local overlay = Instance.new("Frame", gui)
+			overlay.Size = UDim2.new(1,0,1,0)
+			overlay.Position = UDim2.new(0,0,0,0)
+			overlay.BackgroundColor3 = Color3.fromRGB(0,0,0)
+			overlay.BackgroundTransparency = 0.45
+
+			local img = Instance.new("ImageLabel", gui)
+			img.Name = "OD_IntroImage"
+			img.AnchorPoint = Vector2.new(0.5, 0.5)
+			img.Position = UDim2.new(0.5, 0, 0.5, 0)
+			img.Size = UDim2.fromScale(0.6, 0.6)
+			img.BackgroundTransparency = 1
+			img.ScaleType = Enum.ScaleType.Fit
+			img.Image = "rbxassetid://122088117336730"
+			img.ImageTransparency = 1
+
+			local steps = 12
+			for i = 1, steps do
+				if not img.Parent then break end
+				img.ImageTransparency = math.max(0, img.ImageTransparency - (1/steps))
+				task.wait(0.03)
+			end
+
+			task.wait(1.8)
+
+			for i = 1, steps do
+				if not img.Parent then break end
+				img.ImageTransparency = math.min(1, img.ImageTransparency + (1/steps))
+				task.wait(0.03)
+			end
+
+			if gui and gui.Parent then gui:Destroy() end
+		end)
+	end)
+end
+
+-- ===== CAPTIONS (prefer MainGame.caption if available, fallback GUI) =====
+local function showFallbackCaption(text, dur)
+	dur = dur or 4
+	if not LocalPlayer or not LocalPlayer:FindFirstChild("PlayerGui") then
+		if not waitFor(function() return LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui") end, 6, 0.08) then
+			return
+		end
+	end
+	pcall(function()
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "OD_CAP_FALLBACK_" .. tostring(math.random(100000,999999))
+		gui.ResetOnSpawn = false
+		gui.Parent = LocalPlayer.PlayerGui
+		local lbl = Instance.new("TextLabel", gui)
+		lbl.Size = UDim2.new(0.9,0,0.08,0)
+		lbl.Position = UDim2.new(0.05,0,0.88,0)
+		lbl.BackgroundTransparency = 1
+		lbl.TextScaled = true
+		lbl.Font = Enum.Font.GothamBold
+		lbl.TextColor3 = Color3.fromRGB(170,255,200)
+		lbl.TextStrokeTransparency = 0.6
+		lbl.Text = tostring(text)
+		Debris:AddItem(gui, dur)
+	end)
+end
+
+local function getMainGameModuleDelta()
+	pcall(function() if LocalPlayer then LocalPlayer:WaitForChild("PlayerGui", 8) end end)
+	local pg = LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")
+	if not pg then return nil end
+	local mainui = pg:FindFirstChild("MainUI") or pg:FindFirstChild("Main") or pg:FindFirstChild("InGameUI")
+	if not mainui then return nil end
+	local initiator = mainui:FindFirstChild("Initiator") or mainui
+	local mg = initiator:FindFirstChild("Main_Game") or mainui:FindFirstChild("Main_Game")
+	if mg then
+		if mg:IsA("ModuleScript") then
+			local ok, mod = pcall(require, mg)
+			if ok and type(mod) == "table" and type(mod.caption) == "function" then return mod end
+		end
+		if type(mg) == "table" and type(mg.caption) == "function" then return mg end
+	end
+	for _,desc in ipairs(mainui:GetDescendants()) do
+		if desc:IsA("ModuleScript") and tostring(desc.Name):lower():find("main_game") then
+			local ok3, mod3 = pcall(require, desc)
+			if ok3 and type(mod3) == "table" and type(mod3.caption) == "function" then return mod3 end
+		end
+	end
+	return nil
+end
+
+task.spawn(function()
+	task.wait(0.18)
+	local MainGame = getMainGameModuleDelta()
+	if MainGame and type(MainGame.caption) == "function" then
+		pcall(function() MainGame.caption("  the ringer doors by chú bé tê liệt", true) end)
+		task.wait(3)
+		-- watch CurrentRooms (variants)
+		local cr = workspace:FindFirstChild("CurrentRooms") or workspace:FindFirstChild("Current_RoomS") or workspace:FindFirstChild("Current_Rooms") or workspace:FindFirstChild("Rooms")
+		if cr and cr:IsA("Folder") then
+			cr.ChildAdded:Connect(function(room)
+				local rn = tonumber(room.Name)
+				if rn == 1 then task.wait(0.12); pcall(function() MainGame.caption("good luck", true) end) end
+				if rn == 2 then task.wait(0.12); pcall(function() MainGame.caption("enjoi!", true) end) end
+			end)
+		else
+			-- fallback to LatestRoom
+			if RS and RS:FindFirstChild("GameData") and RS.GameData:FindFirstChild("LatestRoom") then
+				local LatestRoom = RS.GameData.LatestRoom
+				LatestRoom.Changed:Connect(function(v)
+					local rn = tonumber(v) or tonumber(LatestRoom.Value)
+					if rn == 1 then task.wait(0.12); pcall(function() MainGame.caption("good luck", true) end) end
+					if rn == 2 then task.wait(0.12); pcall(function() MainGame.caption("enjoi!", true) end) end
+				end)
+			end
+		end
+	else
+		-- fallback caption
+		showFallbackCaption(" the ringer doors by chú bé tê liệt", 6)
+		-- watch LatestRoom for room captions
+		if RS and RS:FindFirstChild("GameData") and RS.GameData:FindFirstChild("LatestRoom") then
+			local LatestRoom = RS.GameData.LatestRoom
+			local cur = tonumber(LatestRoom.Value) or nil
+			if cur == 1 then task.wait(0.12); showFallbackCaption("good luck", 4) end
+			if cur == 2 then task.wait(0.12); showFallbackCaption("enjoi!", 4) end
+			LatestRoom.Changed:Connect(function(v)
+				local rn = tonumber(v) or tonumber(LatestRoom.Value)
+				if rn == 1 then task.wait(0.12); showFallbackCaption("good luck", 4) end
+				if rn == 2 then task.wait(0.12); showFallbackCaption("enjoi!", 4) end
+			end)
+		end
+	end
+end)
+
+-- ===== BLACK FOG (simple) =====
+do
+	local orig = {
+		FogColor = Lighting.FogColor,
+		FogStart = Lighting.FogStart,
+		FogEnd = Lighting.FogEnd,
+		Ambient = Lighting.Ambient,
+		Brightness = Lighting.Brightness
+	}
+	task.spawn(function()
+		task.wait(0.08)
+		pcall(function()
+			local steps = 10
+			local targetColor = Color3.fromRGB(0,0,0)
+			local targetAmbient = Color3.fromRGB(10,10,10)
+			local endFog = 80
+			for i=1,steps do
+				local t = i/steps
+				Lighting.FogColor = Lighting.FogColor:Lerp(targetColor, t)
+				Lighting.Ambient = Lighting.Ambient:Lerp(targetAmbient, t)
+				Lighting.FogStart = 0
+				Lighting.FogEnd = endFog * t
+				Lighting.Brightness = orig.Brightness * (1 - 0.06 * t)
+				task.wait(0.07)
+			end
+			Lighting.FogColor = targetColor
+			Lighting.FogStart = 0
+			Lighting.FogEnd = endFog
+			Lighting.Ambient = targetAmbient
+		end)
+	end)
+end
+
+-- ===== ENTITY LIST =====
+local ENTITY_URLS = {
+	"https://raw.githubusercontent.com/chubeteliet-cpu/OVERDOORS-rework-ver/refs/heads/main/Dread",
+	"https://raw.githubusercontent.com/chubeteliet-cpu/OVERDOORS-rework-ver/refs/heads/main/A-67",
+	"https://raw.githubusercontent.com/chubeteliet-cpu/Ringer-doors/refs/heads/main/E-146",
+	"https://raw.githubusercontent.com/chubeteliet-cpu/Ringer-doors/refs/heads/main/Gold",
+	"https://raw.githubusercontent.com/chubeteliet-cpu/Ringer-doors/refs/heads/main/Depth%20Lurker",
+	"https://raw.githubusercontent.com/chubeteliet-cpu/Ringer-doors/refs/heads/main/A-60",
+	"https://raw.githubusercontent.com/chubeteliet-cpu/Ringer-doors/refs/heads/main/A-20"
+}
+
+-- ===== TRACK ACTIVE ENTITIES (to avoid over-spawn) =====
+local ActiveEntityCount = 0
+local ModelToSource = {}     -- model -> url or "external"
+local RecentSpawnAttempts = {} -- list of {url,time,matched}
+local PerURLLastSuccess = {} -- url -> time last success
+
+-- pattern to identify entity-like models
+local function isEntityLikeName(name)
+	if not name then return false end
+	local s = tostring(name):lower()
+	return s:find("repentance") or s:find("seek") or s:find("rush") or s:find("ambush") or s:find("smiler") or s:find("silence") or s:find("ripper") or s:find("rebound") or s:find("a60")
+end
+
+-- handle new models appearing: mark and count, associate to recent spawn attempt if any
+Workspace.DescendantAdded:Connect(function(desc)
+	-- only respond to top-level Model additions (desc may be deep)
+	if not desc or not desc:IsA("Model") then return end
+	-- small filter: ignore if screenGuis etc
+	pcall(function()
+		if desc.Parent and (desc.Parent:IsA("Folder") == false and desc.Parent == nil) then end
+	end)
+	if not isEntityLikeName(desc.Name) then return end
+
+	-- avoid double-marking
+	if desc:GetAttribute("OD_TRACKED") then return end
+	desc:SetAttribute("OD_TRACKED", true)
+
+	-- increment active count
+	ActiveEntityCount = ActiveEntityCount + 1
+	ModelToSource[desc] = "external"
+	-- try to link to recent spawn attempts
+	local now = tick()
+	for i = #RecentSpawnAttempts, 1, -1 do
+		local a = RecentSpawnAttempts[i]
+		if a and not a.matched and (now - a.time) <= 5 then
+			-- associate
+			ModelToSource[desc] = a.url or "remote"
+			a.matched = true
+			PerURLLastSuccess[a.url] = now
+			break
+		end
+	end
+
+	-- cleanup when model removed
+	local conn
+	conn = desc.AncestryChanged:Connect(function(_, parent)
+		if not parent then
+			pcall(function()
+				if conn then conn:Disconnect() end
+			end)
+			-- decrement active count and cleanup mapping
+			if ModelToSource[desc] then ModelToSource[desc] = nil end
+			ActiveEntityCount = math.max(0, ActiveEntityCount - 1)
+		end
+	end)
+end)
+
+-- ===== spawn functions =====
+local function spawnPlaceholder(roomIndex)
+	local mdl = Instance.new("Model")
+	mdl.Name = "OD_PLACEHOLDER_ENTITY"
+	local p = Instance.new("Part")
+	p.Name = "Entity"
+	p.Size = Vector3.new(2,4,1)
+	p.Anchored = true
+	p.CanCollide = false
+	p.Material = Enum.Material.Neon
+	p.Color = Color3.fromRGB(160,30,30)
+	local placed = false
+	if RS and RS:FindFirstChild("GameData") and RS.GameData:FindFirstChild("LatestRoom") and workspace:FindFirstChild("CurrentRooms") and roomIndex then
+		local rooms = workspace.CurrentRooms:GetChildren()
+		if #rooms > 0 then
+			local idx = math.clamp(roomIndex, 1, #rooms)
+			local r = rooms[idx]
+			local ok, pivot = pcall(function() return r:GetPivot() end)
+			if ok and pivot then p.CFrame = pivot * CFrame.new(0,1,-6); placed = true end
+		end
+	end
+	if not placed then p.CFrame = CFrame.new(0,5,0) end
+	p.Parent = mdl
+	mdl.Parent = Workspace
+	Debris:AddItem(mdl, 6)
+	log("Placeholder spawned for room", roomIndex or "<nil>")
+end
+
+local function trySpawnFromUrl(url)
+	if not url or url == "" then return false, "no_url" end
+	-- record attempt
+	table.insert(RecentSpawnAttempts, {url = url, time = tick(), matched = false})
+	-- attempt fetch & run
+	local ok, body = pcall(function() return game:HttpGet(url, true) end)
+	if not ok or not body or #body < 8 then
+		return false, "fetch_failed"
+	end
+	local suc, runerr = pcall(function() local fn = loadstring(body); if type(fn) == "function" then fn() end end)
+	if not suc then
+		return false, ("run_err:"..tostring(runerr))
+	end
+	-- success executing remote script; we'll wait briefly and rely on DescendantAdded to increment ActiveEntityCount if it spawned models
+	return true
+end
+
+-- ===== IMPROVED SCHEDULER (no %, avoids rapid re-spawn) =====
+task.spawn(function()
+	-- parameters
+	local MIN_ROOM_GAP = 4
+	local MAX_ROOM_GAP = 10
+	local SPAWN_COOLDOWN_SEC = 45
+	local PER_URL_COOLDOWN_SEC = 90
+	local MAX_ACTIVE_ENTITIES = 0 -- only spawn when ActiveEntityCount <= this
+
+	-- wait for LatestRoom (if exists)
+	local waited = 0
+	while not (RS and RS:FindFirstChild("GameData") and RS.GameData:FindFirstChild("LatestRoom")) and waited < 20 do
+		task.wait(0.3); waited = waited + 1
+	end
+	local LatestRoom = (RS and RS:FindFirstChild("GameData") and RS.GameData:FindFirstChild("LatestRoom")) and RS.GameData.LatestRoom or nil
+
+	local lastRoom = (LatestRoom and LatestRoom.Value) or 0
+	local function scheduleNext(r)
+		local base = (r or lastRoom)
+		local gap = math.random(MIN_ROOM_GAP, MAX_ROOM_GAP)
+		return base + math.max(1, gap)
+	end
+	local nextSpawn = scheduleNext(lastRoom)
+	local lastGlobalSpawn = 0
+	log("Scheduler init. next spawn at room", nextSpawn)
+
+	if not LatestRoom then
+		-- fallback loop when LatestRoom not present
+		while true do
+			task.wait(60)
+			if ActiveEntityCount <= MAX_ACTIVE_ENTITIES and (tick() - lastGlobalSpawn) >= SPAWN_COOLDOWN_SEC then
+				local spawned = false
+				for _, url in ipairs(ENTITY_URLS) do
+					-- per-url cooldown check
+					local last = PerURLLastSuccess[url] or 0
+					if tick() - last < PER_URL_COOLDOWN_SEC then
+						-- skip this url for now
+					else
+						local ok, why = pcall(trySpawnFromUrl, url)
+						if ok and (why == true or why == nil) then
+							log("Fallback spawn success from", url)
+							PerURLLastSuccess[url] = tick()
+							spawned = true
+							break
+						else
+							log("Fallback spawn failed for", url, tostring(why))
+						end
+					end
+				end
+				if not spawned then
+					spawnPlaceholder(nil)
+				end
+				lastGlobalSpawn = tick()
+			end
+		end
+		return
+	end
+
+	-- watcher when LatestRoom present
+	LatestRoom.Changed:Connect(function()
+		local cur = LatestRoom.Value or 0
+		if cur <= lastRoom then lastRoom = cur; return end
+		lastRoom = cur
+
+		-- only attempt when cur >= nextSpawn
+		if cur < (nextSpawn or math.huge) then return end
+
+		-- global cooldown
+		if (tick() - lastGlobalSpawn) < SPAWN_COOLDOWN_SEC then
+			log("Scheduler: global cooldown active -> skip spawn at room", cur)
+			nextSpawn = scheduleNext(cur)
+			return
+		end
+
+		-- do not spawn if active entities already present over limit
+		if ActiveEntityCount > MAX_ACTIVE_ENTITIES then
+			log("Scheduler: active entities =", ActiveEntityCount, "> allowed", MAX_ACTIVE_ENTITIES, "-> postpone spawn at room", cur)
+			-- postpone a few rooms to avoid busy loops
+			nextSpawn = cur + math.random(2,5)
+			return
+		end
+
+		-- attempt spawn: try URLs in random order but obey per-URL cooldown
+		local urls = {}
+		for i,u in ipairs(ENTITY_URLS) do urls[i] = u end
+		-- shuffle
+		for i = #urls, 2, -1 do local j = math.random(i); urls[i], urls[j] = urls[j], urls[i] end
+
+		local spawned = false
+		for _,url in ipairs(urls) do
+			local last = PerURLLastSuccess[url] or 0
+			if tick() - last < PER_URL_COOLDOWN_SEC then
+				log("Scheduler: skipping url (cooldown)", url)
+			else
+				log("Scheduler: attempting spawn from", url)
+				local ok, why = pcall(trySpawnFromUrl, url)
+				if ok and (why == true or why == nil) then
+					-- mark last success; actual models may be created shortly and tracked by DescendantAdded
+					PerURLLastSuccess[url] = tick()
+					spawned = true
+					log("Scheduler: spawn executed from", url, "at room", cur)
+					break
+				else
+					log("Scheduler: spawn failed for", url, tostring(why))
+				end
+			end
+			task.wait(0.06)
+		end
+
+		if not spawned then
+			log("Scheduler: no remote succeeded -> placeholder at room", cur)
+			spawnPlaceholder(cur)
+		end
+
+		-- update last spawn time and schedule next
+		lastGlobalSpawn = tick()
+		nextSpawn = scheduleNext(cur)
+		log("Scheduler: next spawn at room", nextSpawn)
+	end)
+end)
+
+log(" RINGER DOORS DELTA EDITION (improved scheduler) loaded.")
